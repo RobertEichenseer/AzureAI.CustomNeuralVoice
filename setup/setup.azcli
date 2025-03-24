@@ -1,0 +1,120 @@
+ks#############################################
+# Step 1: Login to Azure
+#############################################
+$loggedIn = az account show --query "name" -o tsv
+
+if ($loggedIn -ne $null) {
+    Write-Host "Already logged in as $loggedIn"
+} else {
+    Write-Host "Logging in..."
+    az login
+}
+# Retrieve default subscription id
+$subscriptionId = (
+    (
+        az account list -o json `
+            --query "[?isDefault]"
+    ) | ConvertFrom-Json
+).id
+
+# Set Subscription
+az account set --subscription $subscriptionId
+Write-Host "Subscription set to $subscriptionId"
+
+#############################################
+# Step 2: Define Project Unifier
+#############################################
+$random = Get-Random -Minimum 100 -Maximum 999
+Write-Host "Unifier set to: $random"
+
+#############################################
+# Step 3: Create Resource Group
+#############################################
+$resourceGroup = "AzureAI.CustomNeuralVoice"
+$location = "westeurope"
+
+az group create `
+    --location $location `
+    --resource-group $resourceGroup
+
+#############################################
+# Step 4: Create AI Speech Service
+#############################################
+$speechName = "customneuralvoice$random"
+$aiKind = "SpeechServices"
+$speechSKU = "S0"
+
+az cognitiveservices account create `
+    --name $speechName `
+    --resource-group $resourceGroup `
+    --kind $aiKind `
+    --sku  $speechSKU `
+    --location $location `
+    --yes
+
+$speechKey = (
+    az cognitiveservices account keys list `
+        --name $speechName `
+        --resource-group $resourceGroup `
+        --query "key1" `
+        --output tsv
+)
+
+$speechEndpoint = (
+    az cognitiveservices account show `
+        --name $speechName `
+        --resource-group $resourceGroup `
+        --query "properties.endpoint" `
+        --output tsv
+)
+
+#############################################
+# Step 5: Record audio samples & train model
+#############################################
+# Use the Azure AI Speech Portal to record audio samples, train the model 
+# and deploy the model to an endpoint.
+# Record the 
+#     - EndpointID
+#     - SpeechSynthesisVoiceName
+# and provide it in the ./config/config.env file
+#
+# You can also execute Step 7 to retrieve the EndpointID & SpeechSynthesisName
+# Step 7 is assuming that there's just one custom neural voice model in the subscription
+
+#############################################
+# Step 7: Retrieve Custom Voice Model info
+#############################################
+$endpoint = $speechEndpoint.TrimEnd("/")
+
+$customModel = ( `
+    az rest `
+        --method get `
+        --url "$endpoint/customvoice/endpoints?api-version=2024-02-01-preview" `
+        --headers "Ocp-Apim-Subscription-Key=$speechKey" `
+) | ConvertFrom-Json
+
+
+#############################################
+# Step 8: Store Configuration
+#############################################
+$configurationFile = "./config/config.env"
+New-Item -Name $configurationFile -ItemType File -Force
+
+function Set-ConfigurationFileVariable($configurationFile, $variableName, $variableValue) {
+    if (Select-String -Path $configurationFile -Pattern $variableName) {
+        (Get-Content $configurationFile) | Foreach-Object {
+            $_ -replace "$variableName = .*", "$variableName = $variableValue"
+        } | Set-Content $configurationFile
+    } else {
+        Add-Content -Path $configurationFile -value "$variableName = $variableValue"
+    }
+}
+
+Set-ConfigurationFileVariable $configurationFile "CNV_SPEECH_APIKEY" $speechKey
+Set-ConfigurationFileVariable $configurationFile "CNV_SPEECH_ENDPOINT" $speechEndpoint
+Set-ConfigurationFileVariable $configurationFile "CNV_SPEECH_REGION" $location
+Set-ConfigurationFileVariable $configurationFile "CNV_CUSTOMMODEL_ID" $customModel.value[0].id
+Set-ConfigurationFileVariable $configurationFile "CNV_CUSTOMMODEL_NAME" $customModel.value[0].displayName
+
+Write-Host "Configuration file created at: $configurationFile"
+
